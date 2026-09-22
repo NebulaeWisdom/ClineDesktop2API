@@ -1,4 +1,5 @@
 """Upstream HTTP client — Python OpenSSL bypasses Cloud Armor JA3."""
+import io
 import ssl
 import urllib.request
 import urllib.error
@@ -9,7 +10,9 @@ from reqlog import enabled, log_line
 UPSTREAM = "https://api.cline.bot"
 CTX = ssl.create_default_context()
 UA = "Cline/0.0.32"
-HEADERS_TO_DROP = frozenset(["host", "connection", "transfer-encoding"])
+# x-api-key is the proxy's own client credential — never forward it upstream.
+HEADERS_TO_DROP = frozenset(["host", "connection", "content-length", "transfer-encoding", "x-api-key"])
+# urllib derives Content-Length from the translated/rewritten request body.
 PASS_HEADERS = frozenset([
     "authorization", "content-type", "accept", "accept-encoding",
     "x-client-type", "x-client-version", "x-title", "x-platform",
@@ -96,6 +99,9 @@ def do_request(method, path, body=None, headers=None, timeout=120,
 
     If *proxy_token* is provided, it replaces any Authorization header so
     the upstream always sees a valid token regardless of what the client sent.
+
+    Return (status, headers, live response). The caller owns and closes the
+    response; only non-streaming routes should read its entire body.
     """
     url = UPSTREAM + _normalize_path(path)
     fwd = {}
@@ -118,19 +124,15 @@ def do_request(method, path, body=None, headers=None, timeout=120,
     t0 = time.time()
     try:
         resp = urllib.request.urlopen(req, timeout=timeout, context=CTX)
-        elapsed = time.time() - t0
-        rbody = resp.read()
-        if enabled():
-            log_line("---", f"{method} {path} -> {resp.status} ({len(rbody)} bytes, {elapsed:.1f}s)")
-        return resp.status, dict(resp.headers), rbody
     except urllib.error.HTTPError as e:
-        elapsed = time.time() - t0
-        rbody = e.read() if hasattr(e, "read") else b""
-        if enabled():
-            log_line("---", f"{method} {path} -> {e.code} ({len(rbody)} bytes, {elapsed:.1f}s)")
-        return e.code, dict(e.headers) if hasattr(e, "headers") else {}, rbody
+        resp = e
     except Exception as e:
         elapsed = time.time() - t0
         if enabled():
             log_line("---", f"{method} {path} -> ERR {e} ({elapsed:.1f}s)")
-        return 502, {}, json.dumps({"error": {"message": str(e), "type": "proxy_error"}}).encode()
+        body = json.dumps({"error": {"message": str(e), "type": "proxy_error"}}).encode()
+        return 502, {}, io.BytesIO(body)
+    elapsed = time.time() - t0
+    if enabled():
+        log_line("---", f"{method} {path} -> {resp.status} (headers in {elapsed:.1f}s)")
+    return resp.status, dict(resp.headers), resp

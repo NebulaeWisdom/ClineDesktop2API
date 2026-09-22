@@ -1,0 +1,16 @@
+{
+  "port": 61022,
+  "bind": "127.0.0.1",
+  "log_path": null,
+  "rate_limit": null,
+  "desensitize": false,
+  "api_keys": {},
+  "auth": {
+    "workos_base_url": "https://api.workos.com",
+    "cline_base_url": "https://api.cline.bot",
+    "client_id": "client_01K3A541FN8TA3EPPHTD2325AR",
+    "user_agent": "Cline/0.0.32",
+    "refresh_buffer_ms": 300000,
+    "request_timeout_seconds": 30
+  }
+}

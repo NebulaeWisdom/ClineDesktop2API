@@ -9,9 +9,9 @@ def print_banner(cfg):
         "OpenAI-compatible proxy for Cline Desktop (api.cline.bot)",
         f"Listening: {cfg.bind}:{cfg.port}",
         "Upstream:  https://api.cline.bot (Python TLS — bypasses Cloud Armor JA3)",
+        f"Accounts:  {len(cfg.api_keys)} api key(s) registered",
+        f"Config:    {cfg.path}",
     ]
-    if cfg.api_key:
-        lines.append("Auth:      API key required on /v1/ routes")
     if cfg.log_path:
         lines.append(f"Log:       {cfg.log_path}")
     if cfg.rate_limit:

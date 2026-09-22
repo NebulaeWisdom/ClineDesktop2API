@@ -13,18 +13,47 @@ def print_menu():
     print("  │  2. Start server                 │")
     print("  │  3. List models                  │")
     print("  │  4. Test chat                    │")
-    print("  │  5. Re-login                     │")
+    print("  │  5. Login / add account          │")
     print("  │  6. Quit                         │")
     print("  └─────────────────────────────────┘")
     print()
 
 
-def show_status():
+def _short(key):
+    """Key as shown in listings: only its tail, never the full secret."""
+    return f"…{key[-6:]}" if len(key) > 6 else key
+
+
+def select_account(cfg):
+    """Let the user pick a registered api key. Returns (key, path) or None."""
+    keys = sorted(cfg.api_keys)
+    print()
+    if not keys:
+        print("  ✗ No accounts registered yet.")
+        print("    Run option 5 (or `python main.py --login`) to log in first.")
+        print()
+        return None
+    for i, k in enumerate(keys, 1):
+        print(f"    {i}. {cfg.api_keys[k].name}  (key {_short(k)})")
+    print()
+    raw = input("  Account #: ").strip()
+    if not raw.isdigit() or not 1 <= int(raw) <= len(keys):
+        print("\n  Invalid account. Try again.\n")
+        return None
+    key = keys[int(raw) - 1]
+    return key, cfg.api_keys[key]
+
+
+def show_status(cfg):
+    sel = select_account(cfg)
+    if not sel:
+        return
+    key, path = sel
     from auth import load_tokens
-    tok = load_tokens()
+    tok = load_tokens(path)
     print()
     if not tok:
-        print("  ✗ Not logged in. Run option 5 first.")
+        print(f"  ✗ No credentials in {path}")
         print()
         return
     from datetime import datetime, timezone
@@ -36,15 +65,20 @@ def show_status():
         exp_str = "unknown"
         expired = False
     print("  ✓ Authenticated")
-    print(f"    User ID : {tok.get('accountId', 'N/A')}")
+    print(f"    Key     : {_short(key)}")
+    print(f"    File    : {path}")
+    print(f"    User ID : {tok.get('accountId') or 'N/A'}")
     print(f"    Token   : {len(tok['access'])} chars")
     print(f"    Expires : {exp_str}{' (EXPIRED)' if expired else ''}")
     print(f"    Refresh : {'yes' if tok.get('refresh') else 'no'}")
     print()
 
 
-def list_models(port):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models", headers={})
+def list_models(port, key):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
     try:
         r = urllib.request.urlopen(req, timeout=30)
         d = json.loads(r.read())
@@ -59,7 +93,7 @@ def list_models(port):
         print(f"\n  ✗ Failed: {e}\n")
 
 
-def test_chat(port):
+def test_chat(port, key):
     model = input("  Model [~openai/gpt-luna-latest]: ").strip() or "~openai/gpt-luna-latest"
     msg = input("  Message [Hello]: ").strip() or "Hello"
     body = json.dumps({
@@ -72,7 +106,10 @@ def test_chat(port):
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/chat/completions",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
             method="POST",
         )
         r = urllib.request.urlopen(req, timeout=120)
@@ -85,24 +122,34 @@ def test_chat(port):
         print(f"  ✗ {e}\n")
 
 
+def login_account(cfg):
+    """Device-code login; registers the account into cfg and reports its key and file."""
+    from auth import login
+    key, path = login(cfg)
+    print(f"\n  ✓ Logged in: {key} -> {path}\n")
+
+
 def run_menu(cfg):
     while True:
         print_menu()
         choice = input("  > ").strip()
         if choice == "1":
-            show_status()
+            show_status(cfg)
         elif choice == "2":
             from banner import print_banner
             print_banner(cfg)
             from server import serve
             serve(cfg)  # blocks until Ctrl-C
         elif choice == "3":
-            list_models(cfg.port)
+            sel = select_account(cfg)
+            if sel:
+                list_models(cfg.port, sel[0])
         elif choice == "4":
-            test_chat(cfg.port)
+            sel = select_account(cfg)
+            if sel:
+                test_chat(cfg.port, sel[0])
         elif choice == "5":
-            from auth import login
-            login()
+            login_account(cfg)
         elif choice == "6":
             print("\n  Bye!\n")
             break
@@ -112,30 +159,32 @@ def run_menu(cfg):
 
 def main():
     p = argparse.ArgumentParser(description="OpenAI-compatible proxy for Cline Desktop")
-    p.add_argument("--port", type=int, default=61022, help="listen port (default 61022)")
-    p.add_argument("--bind", default="127.0.0.1", help="bind address (default 127.0.0.1)")
-    p.add_argument("--api-key", default=None, help="require this key on /v1/ routes")
-    p.add_argument("--log", default=None, help="path to request log file")
-    p.add_argument("--rate-limit", default=None, help="min interval between requests per IP (e.g. 2s)")
-    p.add_argument("--desensitize", action="store_true", help="rewrite moderation triggers in prompts")
-    p.add_argument("--login", action="store_true", help="run device-code OAuth login then exit")
+    p.add_argument("--port", type=int, default=None, help="listen port (overrides config.json)")
+    p.add_argument("--bind", default=None, help="bind address (overrides config.json)")
+    p.add_argument("--log", default=None, help="path to request log file (overrides config.json)")
+    p.add_argument("--rate-limit", default=None,
+                   help="min interval between requests per IP, e.g. 2s (overrides config.json)")
+    p.add_argument("--desensitize", action="store_true", default=None,
+                   help="rewrite moderation triggers in prompts (overrides config.json)")
+    p.add_argument("--login", action="store_true",
+                   help="run device-code OAuth login, register the account, then exit")
     p.add_argument("--no-menu", action="store_true",
                    help="start server directly instead of the interactive menu")
-    p.add_argument("--owned-auth", action="store_true", help=argparse.SUPPRESS)
     args = p.parse_args()
 
     if args.login:
-        from auth import login
-        login()
+        from config import initialize_config, load_config
+        initialize_config()
+        cfg = load_config()
+        login_account(cfg)
         return
 
     from config import load_config
-    cfg = load_config(args)
-    cfg.owned_auth = args.owned_auth
-
-    if not cfg.owned_auth:
-        from auth import load_tokens
-        cfg.owned_auth = load_tokens() is not None
+    try:
+        cfg = load_config(args)
+    except FileNotFoundError as e:
+        print(f"\n  ✗ {e}\n")
+        sys.exit(2)
 
     # Interactive menu by default (like WorkBuddy2API); --no-menu starts server directly.
     if not args.no_menu:
